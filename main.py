@@ -2,7 +2,7 @@ import time, requests, telebot, os, math, threading, statistics, json
 from datetime import datetime, timedelta, timezone
 
 # ==========================================
-# 1. 配置与持久化 (Zeabur 强固逻辑)
+# 1. 配置与持久化
 # ==========================================
 DATA_FILE = "trading_data.json"
 BOT_TOKEN = os.getenv('BOT_TOKEN') or "你的TOKEN"
@@ -18,7 +18,7 @@ def save_data():
     try:
         with open(DATA_FILE, 'w') as f:
             json.dump({"watchlist": watchlist, "positions": positions}, f)
-    except: pass
+    except Exception as e: print(f"Save Error: {e}")
 
 def load_data():
     global watchlist, positions
@@ -28,7 +28,7 @@ def load_data():
                 data = json.load(f)
                 watchlist = data.get("watchlist", [])
                 positions = data.get("positions", {})
-        except: pass
+        except Exception as e: print(f"Load Error: {e}")
 
 load_data()
 
@@ -55,16 +55,20 @@ airport_metadata = {
 NUM_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "1️⃣1️⃣", "1️⃣2️⃣", "1️⃣3️⃣", "1️⃣4️⃣", "1️⃣5️⃣", "1️⃣6️⃣", "1️⃣7️⃣", "1️⃣8️⃣", "1️⃣9️⃣", "2️⃣0️⃣", "2️⃣1️⃣", "2️⃣2️⃣", "2️⃣3️⃣", "2️⃣4️⃣", "2️⃣5️⃣", "2️⃣6️⃣", "2️⃣7️⃣", "2️⃣8️⃣", "2️⃣9️⃣", "3️⃣0️⃣"]
 
 # ==========================================
-# 2. 数学引擎 (A 逻辑极值修正)
+# 2. 物理与数学引擎 (防崩溃加强版)
 # ==========================================
 def phi(z): return (1.0 + math.erf(z / math.sqrt(2.0))) / 2.0
 
 def calculate_precise_win_rate(target, t_peak, curr_t, hour, intent, wind=0, rh=0, icao=""):
     try:
-        t_f = float(target)
+        # 强行过滤非数字输入
+        t_str = str(target).replace('N','').strip()
+        t_f = float(''.join(c for c in t_str if c.isdigit() or c=='.'))
+        
         if icao in airport_hod and airport_hod[icao] >= t_f:
             if intent == "YES" or (intent == "突破" and airport_hod[icao] >= t_f + 1.0): return 100.0
             if intent == "防守": return 0.0
+        
         damping = 0.0
         if hour >= 13:
             if wind > 25: damping += 0.85
@@ -72,6 +76,7 @@ def calculate_precise_win_rate(target, t_peak, curr_t, hour, intent, wind=0, rh=
             else: damping += (wind * 0.012)
             if rh > 75: damping += 0.3
             if hour >= 16: damping += 0.55
+            
         adj_peak = t_peak - damping if t_peak > curr_t else t_peak
         sigma = 1.0 if hour < 12 else (0.6 if hour < 15 else (0.3 if hour < 17 else 0.15))
         z1, z2 = (t_f - adj_peak) / sigma, (t_f + 1.0 - adj_peak) / sigma
@@ -84,7 +89,7 @@ def calculate_precise_win_rate(target, t_peak, curr_t, hour, intent, wind=0, rh=
         if intent == "防守": return p_def
         if intent == "突破": return round(p_hit_brk, 1)
         return round(p_hit_yes, 1)
-    except: return 0.0
+    except: return 0.0 # 任何错误直接返回 0，确保程序不死
 
 def sync_airport_history(icao):
     try:
@@ -119,7 +124,7 @@ def calc_ls_slope(icao, curr_t, metar):
     return (f"↑{abs(round(m,2))}" if m > 0 else f"↓{abs(round(m,2))}"), round(m, 2)
 
 # ==========================================
-# 3. 视觉报告引擎 (保持 V16.4 战时模板)
+# 3. 报告引擎
 # ==========================================
 def build_single_report(icao):
     icao = icao.upper()
@@ -175,7 +180,7 @@ def build_single_report(icao):
             win_pct = calculate_precise_win_rate(target, tp_peak, curr_t, h, intent, num_wind, num_rh, icao)
             ma = "↑" if win_pct > prob_memory.get(f"{icao}_{target}_{intent}", win_pct) else ("↓" if win_pct < prob_memory.get(f"{icao}_{target}_{intent}", win_pct) else "-")
             prob_memory[f"{icao}_{target}_{intent}"] = win_pct
-            dot = "🟢" if (win_pct >= 80 or (icao in airport_hod and airport_hod[icao] >= float(target))) else "🔴"
+            dot = "🟢" if (win_pct >= 80 or (icao in airport_hod and airport_hod[icao] >= float(str(target).replace('N','').strip() if str(target).replace('N','').strip().replace('.','').isdigit() else 999))) else "🔴"
             airport_dots.append(dot)
             pos_lines.append(f"{dot} ({target}N | 胜率:{win_pct}% {ma}) {'🛡️ [防守中]' if intent=='防守' else '🚀 [博弈中]'} [胜率{'提升📈' if ma=='↑' else '下降📉' if ma=='↓' else '横盘➖'}]")
             global_pos_list.append(f"{flag} {icao} {target}N **{intent}** (胜率:{win_pct}% {ma})")
@@ -189,113 +194,117 @@ def build_single_report(icao):
     return report, global_pos_list
 
 # ==========================================
-# 4. 指令系统 (批量解析器)
+# 4. 指令系统 (带防火墙)
 # ==========================================
 def send_chunked(chat_id, header, reports, footer):
-    msg = header
-    for r in reports:
-        if len(msg) + len(r) > 3800: bot.send_message(chat_id, msg, parse_mode="Markdown"); msg = ""
-        msg += r
-    if footer: msg += footer
-    if msg.strip(): bot.send_message(chat_id, msg, parse_mode="Markdown")
-
-@bot.message_handler(commands=['watch'])
-def cmd_watch(message):
-    icaos = [i.upper() for i in message.text.split()[1:] if len(i) == 4]
-    added = []
-    for icao in icaos:
-        if icao not in watchlist:
-            watchlist.append(icao)
-            sync_airport_history(icao)
-            added.append(icao)
-    save_data()
-    bot.reply_to(message, f"📡 批量开启监控: {', '.join(added)}" if added else "⚠️ 机场已在列表或格式错误")
+    try:
+        msg = header
+        for r in reports:
+            if len(msg) + len(r) > 3800:
+                bot.send_message(chat_id, msg, parse_mode="Markdown")
+                msg = ""
+            msg += r
+        if footer: msg += footer
+        if msg.strip():
+            bot.send_message(chat_id, msg, parse_mode="Markdown")
+    except Exception as e:
+        # 如果 Markdown 炸了，尝试纯文本发送，防止机器人死机
+        bot.send_message(chat_id, f"⚠️ 消息格式解析失败(Markdown Error)，尝试纯文本输出:\n\n{msg[:2000]}")
 
 @bot.message_handler(commands=['pos'])
 def cmd_pos(message):
-    parts, cur_icao, added = message.text.split()[1:], None, []
-    i = 0
-    while i < len(parts):
-        p = parts[i].upper()
-        if len(p) == 4 and p.isalpha():
-            cur_icao = p
-            if cur_icao not in watchlist: watchlist.append(cur_icao)
-            i += 1
-            continue
-        if cur_icao and i + 1 < len(parts):
-            target, intent = parts[i].upper().replace('N', ''), parts[i+1].upper()
-            if intent in ['突破', '防守', 'YES']:
-                if cur_icao not in positions: positions[cur_icao] = []
-                if not any(x[0] == target and x[2] == intent for x in positions[cur_icao]):
-                    positions[cur_icao].append((target, 'N', intent))
-                    added.append(f"{cur_icao} {target}N {intent}")
-                i += 2
+    try:
+        parts, cur_icao, added = message.text.split()[1:], None, []
+        i = 0
+        while i < len(parts):
+            p = parts[i].upper()
+            if len(p) == 4 and p.isalpha():
+                cur_icao = p
+                if cur_icao not in watchlist: watchlist.append(cur_icao)
+                i += 1
                 continue
-        i += 1
-    save_data(); bot.send_message(message.chat.id, "✅ 批量录入:\n" + "\n".join(added) if added else "⚠️ 识别失败")
+            if cur_icao and i + 1 < len(parts):
+                target_raw, intent = parts[i].upper().replace('N', ''), parts[i+1].upper()
+                # 关键修复：只有当 target 真的包含数字时才录入
+                if any(c.isdigit() for c in target_raw) and intent in ['突破', '防守', 'YES']:
+                    if cur_icao not in positions: positions[cur_icao] = []
+                    if not any(x[0] == target_raw and x[2] == intent for x in positions[cur_icao]):
+                        positions[cur_icao].append((target_raw, 'N', intent))
+                        added.append(f"{cur_icao} {target_raw}N {intent}")
+                    i += 2
+                    continue
+            i += 1
+        save_data(); bot.send_message(message.chat.id, "✅ 录入:\n" + "\n".join(added) if added else "⚠️ 未识别到有效仓位数字")
+    except Exception as e: bot.reply_to(message, f"❌ 指令执行崩溃: {e}")
 
 @bot.message_handler(commands=['delpos'])
 def cmd_delpos(message):
-    parts = message.text.split()[1:]
-    if not parts: bot.reply_to(message, "⚠️ 格式: `/delpos ICAO` 或 `/delpos all` "); return
-    if parts[0].lower() == 'all':
-        positions.clear(); watchlist.clear(); save_data(); bot.reply_to(message, "🗑️ 全部清空"); return
-    
-    cur_icao, removed = None, []
-    i = 0
-    while i < len(parts):
-        p = parts[i].upper()
-        # 1. 如果是 ICAO
-        if len(p) == 4 and p.isalpha():
-            cur_icao = p
-            # 如果 ICAO 后面没有了，或者后面跟着的是另一个 ICAO，说明是删除整个机场
-            if i + 1 == len(parts) or (len(parts[i+1]) == 4 and parts[i+1].isalpha()):
-                if cur_icao in positions: del positions[cur_icao]
-                if cur_icao in watchlist: watchlist.remove(cur_icao)
-                removed.append(f"{cur_icao} (整体移除)")
-                i += 1
-                continue
-            i += 1
-            continue
-        # 2. 如果是 仓位细节
-        if cur_icao and i + 1 < len(parts):
-            target, intent = parts[i].upper().replace('N', ''), parts[i+1].upper()
-            if cur_icao in positions:
-                # 手术刀删除
-                original_len = len(positions[cur_icao])
-                positions[cur_icao] = [x for x in positions[cur_icao] if not (x[0]==target and x[2]==intent)]
-                if len(positions[cur_icao]) < original_len:
-                    removed.append(f"{cur_icao} {target}N {intent}")
-            i += 2
-            continue
-        i += 1
-    save_data(); bot.send_message(message.chat.id, "🗑️ 删除结果:\n" + "\n".join(removed) if removed else "⚠️ 未找到对应项")
-
-@bot.message_handler(commands=['list'])
-def cmd_list(message):
-    txt = "📋 **监控列表:** " + (", ".join(watchlist) if watchlist else "空")
-    if positions:
-        txt += "\n💰 **持仓分布:**\n"
-        for icao, pos in positions.items():
-            for p in pos: txt += f"• {icao}: {p[0]}N {p[2]}\n"
-    bot.reply_to(message, txt)
-
-@bot.message_handler(commands=['settime'])
-def cmd_settime(message):
-    global BROADCAST_INTERVAL
     try:
-        mins = int(message.text.split()[1]); BROADCAST_INTERVAL = mins * 60
-        bot.reply_to(message, f"✅ 播报频率改为: {mins} 分钟")
-    except: pass
+        parts = message.text.split()[1:]
+        if not parts: bot.reply_to(message, "⚠️ 格式: `/delpos ICAO` 或 `/delpos all` "); return
+        if parts[0].lower() == 'all':
+            positions.clear(); watchlist.clear(); save_data(); bot.reply_to(message, "🗑️ 全部清空"); return
+        cur_icao, removed = None, []
+        i = 0
+        while i < len(parts):
+            p = parts[i].upper()
+            if len(p) == 4 and p.isalpha():
+                cur_icao = p
+                if i + 1 == len(parts) or (len(parts[i+1]) == 4 and parts[i+1].isalpha()):
+                    if cur_icao in positions: del positions[cur_icao]
+                    if cur_icao in watchlist: watchlist.remove(cur_icao)
+                    removed.append(f"{cur_icao} (整体移除)")
+                    i += 1
+                    continue
+                i += 1; continue
+            if cur_icao and i + 1 < len(parts):
+                target, intent = parts[i].upper().replace('N', ''), parts[i+1].upper()
+                if cur_icao in positions:
+                    positions[cur_icao] = [x for x in positions[cur_icao] if not (x[0]==target and x[2]==intent)]
+                    removed.append(f"{cur_icao} {target}N {intent}")
+                i += 2; continue
+            i += 1
+        save_data(); bot.send_message(message.chat.id, "🗑️ 删除结果:\n" + "\n".join(removed) if removed else "⚠️ 未找到")
+    except Exception as e: bot.reply_to(message, f"❌ 删除崩溃: {e}")
 
 @bot.message_handler(commands=['now'])
 def cmd_now(message):
-    target = [i.upper() for i in message.text.split()[1:] if len(i)==4] or watchlist
-    reports, all_pos = [], []
-    for icao in target:
-        txt, ps = build_single_report(icao); reports.append(txt); all_pos.extend(ps)
-    risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"{NUM_EMOJIS[idx] if idx<30 else ''} {p}" for idx, p in enumerate(all_pos)]) if all_pos else ""
-    send_chunked(message.chat.id, "📊 **【全量战报】**\n\n", reports, risk_summary)
+    try:
+        target = [i.upper() for i in message.text.split()[1:] if len(i)==4] or watchlist
+        if not target: bot.reply_to(message, "⚠️ 监控列表为空"); return
+        reports, all_pos = [], []
+        for icao in target:
+            try:
+                txt, ps = build_single_report(icao); reports.append(txt); all_pos.extend(ps)
+            except: reports.append(f"❌ {icao} 计算过程中崩溃\n\n")
+        
+        risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"{NUM_EMOJIS[idx] if idx<30 else ''} {p}" for idx, p in enumerate(all_pos)]) if all_pos else ""
+        send_chunked(message.chat.id, "📊 **【全量战报】**\n\n", reports, risk_summary)
+    except Exception as e: bot.reply_to(message, f"❌ NOW指令崩溃: {e}")
+
+@bot.message_handler(commands=['list'])
+def cmd_list(message):
+    try:
+        txt = "📋 **监控列表:** " + (", ".join(watchlist) if watchlist else "空")
+        if positions:
+            txt += "\n💰 **持仓分布:**\n"
+            for icao, pos in positions.items():
+                for p in pos: txt += f"• {icao}: {p[0]}N {p[2]}\n"
+        bot.reply_to(message, txt)
+    except: pass
+
+@bot.message_handler(commands=['watch'])
+def cmd_watch(message):
+    try:
+        icaos = [i.upper() for i in message.text.split()[1:] if len(i) == 4]
+        added = []
+        for icao in icaos:
+            if icao not in watchlist:
+                watchlist.append(icao)
+                sync_airport_history(icao)
+                added.append(icao)
+        save_data(); bot.reply_to(message, f"📡 监控开启: {', '.join(added)}" if added else "⚠️ 格式错误")
+    except: pass
 
 def auto_broadcast_loop():
     while True:
@@ -303,9 +312,10 @@ def auto_broadcast_loop():
             if watchlist:
                 reports, all_pos = [], []
                 for i in watchlist:
-                    t, p = build_single_report(i); reports.append(t); all_pos.extend(p)
+                    try: t, p = build_single_report(i); reports.append(t); all_pos.extend(p)
+                    except: pass
                 risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"{NUM_EMOJIS[idx] if idx<30 else ''} {p}" for idx, p in enumerate(all_pos)]) if all_pos else ""
-                send_chunked(MY_USER_ID, f"📢 **【定时播报】** ({BROADCAST_INTERVAL//60}min)\n\n", reports, risk_summary)
+                send_chunked(MY_USER_ID, f"📢 **【实时雷达】** ({BROADCAST_INTERVAL//60}min)\n\n", reports, risk_summary)
             time.sleep(BROADCAST_INTERVAL)
         except: time.sleep(60)
 
