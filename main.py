@@ -17,8 +17,8 @@ airport_hod = {}
 def save_data():
     try:
         with open(DATA_FILE, 'w') as f:
-            json.dump({"watchlist": watchlist, "positions": positions}, f)
-    except Exception as e: print(f"Save Error: {e}")
+            json.dump({"watchlist": list(set(watchlist)), "positions": positions}, f)
+    except: pass
 
 def load_data():
     global watchlist, positions
@@ -26,9 +26,9 @@ def load_data():
         try:
             with open(DATA_FILE, 'r') as f:
                 data = json.load(f)
-                watchlist = data.get("watchlist", [])
+                watchlist = list(set(data.get("watchlist", [])))
                 positions = data.get("positions", {})
-        except Exception as e: print(f"Load Error: {e}")
+        except: pass
 
 load_data()
 
@@ -55,16 +55,21 @@ airport_metadata = {
 NUM_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "1️⃣1️⃣", "1️⃣2️⃣", "1️⃣3️⃣", "1️⃣4️⃣", "1️⃣5️⃣", "1️⃣6️⃣", "1️⃣7️⃣", "1️⃣8️⃣", "1️⃣9️⃣", "2️⃣0️⃣", "2️⃣1️⃣", "2️⃣2️⃣", "2️⃣3️⃣", "2️⃣4️⃣", "2️⃣5️⃣", "2️⃣6️⃣", "2️⃣7️⃣", "2️⃣8️⃣", "2️⃣9️⃣", "3️⃣0️⃣"]
 
 # ==========================================
-# 2. 物理与数学引擎 (防崩溃加强版)
+# 2. 物理与数学引擎 (A 逻辑极值修正)
 # ==========================================
 def phi(z): return (1.0 + math.erf(z / math.sqrt(2.0))) / 2.0
 
+def clean_float(val):
+    try:
+        if isinstance(val, (int, float)): return float(val)
+        s = ''.join(c for c in str(val) if c.isdigit() or c == '.')
+        return float(s) if s else 0.0
+    except: return 0.0
+
 def calculate_precise_win_rate(target, t_peak, curr_t, hour, intent, wind=0, rh=0, icao=""):
     try:
-        # 强行过滤非数字输入
-        t_str = str(target).replace('N','').strip()
-        t_f = float(''.join(c for c in t_str if c.isdigit() or c=='.'))
-        
+        t_f = clean_float(target)
+        if t_f == 0: return 0.0
         if icao in airport_hod and airport_hod[icao] >= t_f:
             if intent == "YES" or (intent == "突破" and airport_hod[icao] >= t_f + 1.0): return 100.0
             if intent == "防守": return 0.0
@@ -89,15 +94,18 @@ def calculate_precise_win_rate(target, t_peak, curr_t, hour, intent, wind=0, rh=
         if intent == "防守": return p_def
         if intent == "突破": return round(p_hit_brk, 1)
         return round(p_hit_yes, 1)
-    except: return 0.0 # 任何错误直接返回 0，确保程序不死
+    except: return 0.0
 
 def sync_airport_history(icao):
     try:
+        # API 节流控制
+        time.sleep(1.2) 
         url = f"https://api.checkwx.com/metar/{icao}/history/12"
-        r = requests.get(url, headers={"X-API-Key": CHECKWX_API_KEY}, timeout=10).json()
-        if 'data' in r and r['data']:
+        r = requests.get(url, headers={"X-API-Key": CHECKWX_API_KEY}, timeout=10)
+        data = r.json()
+        if 'data' in data and data['data']:
             pts = []
-            for d in reversed(r['data']):
+            for d in reversed(data['data']):
                 t, obs = d.get('temperature', {}).get('celsius'), d.get('observed')
                 if t is not None and obs:
                     ts = datetime.strptime(obs, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
@@ -105,9 +113,7 @@ def sync_airport_history(icao):
             if pts:
                 temp_memory[icao] = pts[-12:]
                 airport_hod[icao] = max([p['temp'] for p in pts])
-                return True
     except: pass
-    return False
 
 def calc_ls_slope(icao, curr_t, metar):
     if not isinstance(curr_t, (int, float)): return "同步中", 0.0
@@ -117,35 +123,39 @@ def calc_ls_slope(icao, curr_t, metar):
         temp_memory[icao].append({'temp': curr_t, 'time': obs_dt})
     data = [d for d in temp_memory[icao] if (datetime.now(timezone.utc) - d['time']).total_seconds() <= 7200]
     temp_memory[icao] = data
-    if len(data) < 2: return "同步中", 0.0
+    if len(data) < 2: return "预热中", 0.0
     t_v = [(d['time'] - data[0]['time']).total_seconds()/3600.0 for d in data]; T_v = [d['temp'] for d in data]
     n = len(data); denom = (n * sum(x**2 for x in t_v)) - (sum(t_v)**2)
     m = 0.0 if denom == 0 else ((n * sum(x*y for x,y in zip(t_v, T_v))) - (sum(t_v)*sum(T_v))) / denom
     return (f"↑{abs(round(m,2))}" if m > 0 else f"↓{abs(round(m,2))}"), round(m, 2)
 
 # ==========================================
-# 3. 报告引擎
+# 3. 报告引擎 (强容错)
 # ==========================================
 def build_single_report(icao):
     icao = icao.upper()
-    if icao not in airport_metadata: return f"❌ {icao} 未录入元数据\n\n", []
-    if icao not in airport_hod or len(temp_memory.get(icao, [])) < 2: sync_airport_history(icao)
-
+    if icao not in airport_metadata: return f"❌ {icao} 缺少元数据\n\n", []
+    
     speci_tag, model_warn = "", ""
     try:
-        r = requests.get(f"https://api.checkwx.com/metar/{icao}/decoded", headers={"X-API-Key": CHECKWX_API_KEY}, timeout=5).json()
-        metar = r['data'][0]
+        r = requests.get(f"https://api.checkwx.com/metar/{icao}/decoded", headers={"X-API-Key": CHECKWX_API_KEY}, timeout=6)
+        if r.status_code != 200: return f"❌ {icao} API错误 {r.status_code}\n\n", []
+        data = r.json()
+        if 'data' not in data or not data['data']: return f"❌ {icao} 无报文\n\n", []
+        metar = data['data'][0]
         if "SPECI" in metar.get('raw_text', ''): speci_tag = " [SPECI 突变]"
         curr_t = metar.get('temperature', {}).get('celsius', "N/A")
-        if isinstance(curr_t, (int, float)): airport_hod[icao] = max(airport_hod.get(icao, -99), curr_t)
+        if isinstance(curr_t, (int, float)):
+            airport_hod[icao] = max(airport_hod.get(icao, -99), curr_t)
         if obs_str := metar.get('observed'): 
             metar['observed_unix'] = datetime.strptime(obs_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
-    except: return f"❌ {icao} METAR获取失败\n\n", []
+    except Exception as e: return f"❌ {icao} 接口超时\n\n", []
 
+    # 预测模型部分
     cloud, rad, wind, rh, g_max, m_max, e_max, offset = "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", 0
     try:
         lat, lon = airport_metadata[icao]['coords']
-        f = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,cloudcover,shortwave_radiation,windspeed_10m,relative_humidity_2m&models=dwd_icon,ecmwf_ifs,gfs_seamless&forecast_days=1&timezone=auto", timeout=10).json()
+        f = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,cloudcover,shortwave_radiation,windspeed_10m,relative_humidity_2m&models=dwd_icon,ecmwf_ifs,gfs_seamless&forecast_days=1&timezone=auto", timeout=5).json()
         hourly, offset = f.get('hourly', {}), f.get('utc_offset_seconds', 0)
         local_dt = datetime.now(timezone.utc) + timedelta(seconds=offset)
         h_idx = min(23, max(0, local_dt.hour))
@@ -154,10 +164,11 @@ def build_single_report(icao):
         def gm(k): ts = [v for v in hourly.get(k, [])[:24] if isinstance(v, (int, float))]; return round(max(ts), 1) if ts else "N/A"
         g_max, m_max, e_max = gm('temperature_2m_gfs_seamless'), gm('temperature_2m_dwd_icon'), gm('temperature_2m_ecmwf_ifs')
         v_f = [v for v in [g_max, m_max, e_max] if isinstance(v, (int, float))]
-        if len(v_f) >= 2 and (max(v_f) - min(v_f)) > 2.5: model_warn = " ⚠️ [模型严重分歧]"
+        if len(v_f) >= 2 and (max(v_f) - min(v_f)) > 2.5: model_warn = " ⚠️ [模型分歧]"
     except: pass
 
-    tp_peak = max(curr_t, statistics.median(v_f)) if 'v_f' in locals() and v_f and isinstance(curr_t, (int,float)) else 25.0
+    valid_f = [v for v in [g_max, m_max, e_max] if isinstance(v, (int, float))]
+    tp_peak = max(curr_t, statistics.median(valid_f)) if valid_f and isinstance(curr_t, (int,float)) else 25.0
     slope_str, m_val = calc_ls_slope(icao, curr_t, metar)
     local_dt = datetime.now(timezone.utc) + timedelta(seconds=offset)
     h, num_wind, num_rh = local_dt.hour, (wind if isinstance(wind, (int,float)) else 0), (rh if isinstance(rh, (int,float)) else 0)
@@ -168,7 +179,7 @@ def build_single_report(icao):
         lvl = (curr_base - 1) + i
         v_req = round((float(lvl) + 1.0 - curr_t) / max(0.5, 19 - h), 2) if isinstance(curr_t, (int,float)) else 0.0
         pb, pd, py = calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "突破", num_wind, num_rh, icao), calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "防守", num_wind, num_rh, icao), calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "YES", num_wind, num_rh, icao)
-        diag = " [已突破:结算Yes]" if icao in airport_hod and airport_hod[icao] >= lvl + 1.0 else (" 🚀 [突破中]" if pb > 65 else (" 🛡️ [防守中]" if pd > 85 else (" 💀 [极难触碰]" if v_req > m_val + 0.9 else "")))
+        diag = " [已突破:Yes]" if icao in airport_hod and airport_hod[icao] >= lvl + 1.0 else (" 🚀 [突破中]" if pb > 65 else (" 🛡️ [防守中]" if pd > 85 else ""))
         matrix_lines.append(f"{NUM_EMOJIS[i-1]} {lvl}N [需↑{v_req}|实{slope_str}] 突破:{pb}%|防守:{pd}%|YES:{py}%{diag}")
 
     pos_display, global_pos_list = "-- (空仓观望)", []
@@ -180,9 +191,9 @@ def build_single_report(icao):
             win_pct = calculate_precise_win_rate(target, tp_peak, curr_t, h, intent, num_wind, num_rh, icao)
             ma = "↑" if win_pct > prob_memory.get(f"{icao}_{target}_{intent}", win_pct) else ("↓" if win_pct < prob_memory.get(f"{icao}_{target}_{intent}", win_pct) else "-")
             prob_memory[f"{icao}_{target}_{intent}"] = win_pct
-            dot = "🟢" if (win_pct >= 80 or (icao in airport_hod and airport_hod[icao] >= float(str(target).replace('N','').strip() if str(target).replace('N','').strip().replace('.','').isdigit() else 999))) else "🔴"
+            dot = "🟢" if (win_pct >= 80 or (icao in airport_hod and airport_hod[icao] >= clean_float(target))) else "🔴"
             airport_dots.append(dot)
-            pos_lines.append(f"{dot} ({target}N | 胜率:{win_pct}% {ma}) {'🛡️ [防守中]' if intent=='防守' else '🚀 [博弈中]'} [胜率{'提升📈' if ma=='↑' else '下降📉' if ma=='↓' else '横盘➖'}]")
+            pos_lines.append(f"{dot} ({target}N | 胜率:{win_pct}% {ma}) {'🛡️' if intent=='防守' else '🚀'} [胜率{'提升' if ma=='↑' else '下降' if ma=='↓' else '横盘'}]")
             global_pos_list.append(f"{flag} {icao} {target}N **{intent}** (胜率:{win_pct}% {ma})")
         pos_display, main_dot = "\n".join(pos_lines), ("🔴" if "🔴" in airport_dots else "🟢")
 
@@ -194,9 +205,10 @@ def build_single_report(icao):
     return report, global_pos_list
 
 # ==========================================
-# 4. 指令系统 (带防火墙)
+# 4. 指令系统 (防崩溃降级版)
 # ==========================================
-def send_chunked(chat_id, header, reports, footer):
+def send_safe_message(chat_id, header, reports, footer):
+    """先尝试 Markdown，失败后降级为纯文本，绝不装死"""
     try:
         msg = header
         for r in reports:
@@ -206,120 +218,96 @@ def send_chunked(chat_id, header, reports, footer):
             msg += r
         if footer: msg += footer
         if msg.strip():
-            bot.send_message(chat_id, msg, parse_mode="Markdown")
+            try: bot.send_message(chat_id, msg, parse_mode="Markdown")
+            except: bot.send_message(chat_id, msg) # 降级发纯文本
     except Exception as e:
-        # 如果 Markdown 炸了，尝试纯文本发送，防止机器人死机
-        bot.send_message(chat_id, f"⚠️ 消息格式解析失败(Markdown Error)，尝试纯文本输出:\n\n{msg[:2000]}")
+        bot.send_message(chat_id, f"❌ 发送异常: {str(e)[:100]}")
 
-@bot.message_handler(commands=['pos'])
+@bot.message_handler(commands=['pos', 'pos', 'POS'])
 def cmd_pos(message):
-    try:
-        parts, cur_icao, added = message.text.split()[1:], None, []
-        i = 0
-        while i < len(parts):
-            p = parts[i].upper()
-            if len(p) == 4 and p.isalpha():
-                cur_icao = p
-                if cur_icao not in watchlist: watchlist.append(cur_icao)
-                i += 1
-                continue
-            if cur_icao and i + 1 < len(parts):
-                target_raw, intent = parts[i].upper().replace('N', ''), parts[i+1].upper()
-                # 关键修复：只有当 target 真的包含数字时才录入
-                if any(c.isdigit() for c in target_raw) and intent in ['突破', '防守', 'YES']:
-                    if cur_icao not in positions: positions[cur_icao] = []
-                    if not any(x[0] == target_raw and x[2] == intent for x in positions[cur_icao]):
-                        positions[cur_icao].append((target_raw, 'N', intent))
-                        added.append(f"{cur_icao} {target_raw}N {intent}")
-                    i += 2
-                    continue
-            i += 1
-        save_data(); bot.send_message(message.chat.id, "✅ 录入:\n" + "\n".join(added) if added else "⚠️ 未识别到有效仓位数字")
-    except Exception as e: bot.reply_to(message, f"❌ 指令执行崩溃: {e}")
-
-@bot.message_handler(commands=['delpos'])
-def cmd_delpos(message):
-    try:
-        parts = message.text.split()[1:]
-        if not parts: bot.reply_to(message, "⚠️ 格式: `/delpos ICAO` 或 `/delpos all` "); return
-        if parts[0].lower() == 'all':
-            positions.clear(); watchlist.clear(); save_data(); bot.reply_to(message, "🗑️ 全部清空"); return
-        cur_icao, removed = None, []
-        i = 0
-        while i < len(parts):
-            p = parts[i].upper()
-            if len(p) == 4 and p.isalpha():
-                cur_icao = p
-                if i + 1 == len(parts) or (len(parts[i+1]) == 4 and parts[i+1].isalpha()):
-                    if cur_icao in positions: del positions[cur_icao]
-                    if cur_icao in watchlist: watchlist.remove(cur_icao)
-                    removed.append(f"{cur_icao} (整体移除)")
-                    i += 1
-                    continue
-                i += 1; continue
-            if cur_icao and i + 1 < len(parts):
-                target, intent = parts[i].upper().replace('N', ''), parts[i+1].upper()
-                if cur_icao in positions:
-                    positions[cur_icao] = [x for x in positions[cur_icao] if not (x[0]==target and x[2]==intent)]
-                    removed.append(f"{cur_icao} {target}N {intent}")
+    parts, cur_icao, added = message.text.split()[1:], None, []
+    i = 0
+    while i < len(parts):
+        p = parts[i].upper()
+        if len(p) == 4 and p.isalpha():
+            cur_icao = p
+            if cur_icao not in watchlist: watchlist.append(cur_icao)
+            i += 1; continue
+        if cur_icao and i + 1 < len(parts):
+            target, intent = parts[i].upper(), parts[i+1].upper()
+            if intent in ['突破', '防守', 'YES']:
+                if cur_icao not in positions: positions[cur_icao] = []
+                positions[cur_icao].append((target, 'N', intent))
+                added.append(f"{cur_icao} {target} {intent}")
                 i += 2; continue
-            i += 1
-        save_data(); bot.send_message(message.chat.id, "🗑️ 删除结果:\n" + "\n".join(removed) if removed else "⚠️ 未找到")
-    except Exception as e: bot.reply_to(message, f"❌ 删除崩溃: {e}")
+        i += 1
+    save_data(); bot.reply_to(message, "✅ 录入:\n" + "\n".join(added) if added else "⚠️ 识别失败")
 
-@bot.message_handler(commands=['now'])
+@bot.message_handler(commands=['now', 'NOW', 'noW', 'Now'])
 def cmd_now(message):
-    try:
-        target = [i.upper() for i in message.text.split()[1:] if len(i)==4] or watchlist
-        if not target: bot.reply_to(message, "⚠️ 监控列表为空"); return
+    target = [i.upper() for i in message.text.split()[1:] if len(i)==4] or watchlist
+    if not target: bot.reply_to(message, "监控列表为空"); return
+    
+    bot.reply_to(message, "⏳ 正在生成多维度实时战报...")
+    def run():
         reports, all_pos = [], []
         for icao in target:
-            try:
-                txt, ps = build_single_report(icao); reports.append(txt); all_pos.extend(ps)
-            except: reports.append(f"❌ {icao} 计算过程中崩溃\n\n")
-        
-        risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"{NUM_EMOJIS[idx] if idx<30 else ''} {p}" for idx, p in enumerate(all_pos)]) if all_pos else ""
-        send_chunked(message.chat.id, "📊 **【全量战报】**\n\n", reports, risk_summary)
-    except Exception as e: bot.reply_to(message, f"❌ NOW指令崩溃: {e}")
+            txt, ps = build_single_report(icao); reports.append(txt); all_pos.extend(ps)
+        risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"⚠️ {p}" for p in all_pos])
+        send_safe_message(message.chat.id, "📊 **【全量战报】**\n\n", reports, risk_summary)
+    threading.Thread(target=run).start()
 
-@bot.message_handler(commands=['list'])
-def cmd_list(message):
-    try:
-        txt = "📋 **监控列表:** " + (", ".join(watchlist) if watchlist else "空")
-        if positions:
-            txt += "\n💰 **持仓分布:**\n"
-            for icao, pos in positions.items():
-                for p in pos: txt += f"• {icao}: {p[0]}N {p[2]}\n"
-        bot.reply_to(message, txt)
-    except: pass
-
-@bot.message_handler(commands=['watch'])
+@bot.message_handler(commands=['watch', 'WATCH'])
 def cmd_watch(message):
-    try:
-        icaos = [i.upper() for i in message.text.split()[1:] if len(i) == 4]
+    icaos = [i.upper() for i in message.text.split()[1:] if len(i) == 4]
+    if not icaos: return
+    bot.reply_to(message, f"📡 启动后台异步同步器 (目标 {len(icaos)} 个机场)...")
+    def run():
         added = []
         for icao in icaos:
             if icao not in watchlist:
                 watchlist.append(icao)
-                sync_airport_history(icao)
+                sync_airport_history(icao) # 内含 1.2s 延时保护 API
                 added.append(icao)
-        save_data(); bot.reply_to(message, f"📡 监控开启: {', '.join(added)}" if added else "⚠️ 格式错误")
-    except: pass
+        save_data()
+        bot.send_message(message.chat.id, f"✅ 同步器工作完成: {', '.join(added) if added else '列表已更新'}")
+    threading.Thread(target=run).start()
 
-def auto_broadcast_loop():
-    while True:
-        try:
-            if watchlist:
-                reports, all_pos = [], []
-                for i in watchlist:
-                    try: t, p = build_single_report(i); reports.append(t); all_pos.extend(p)
-                    except: pass
-                risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"{NUM_EMOJIS[idx] if idx<30 else ''} {p}" for idx, p in enumerate(all_pos)]) if all_pos else ""
-                send_chunked(MY_USER_ID, f"📢 **【实时雷达】** ({BROADCAST_INTERVAL//60}min)\n\n", reports, risk_summary)
-            time.sleep(BROADCAST_INTERVAL)
-        except: time.sleep(60)
+@bot.message_handler(commands=['list', 'LIST'])
+def cmd_list(message):
+    txt = "📋 **监控列表:** " + (", ".join(watchlist) if watchlist else "空")
+    if positions:
+        txt += "\n💰 **持仓分布:**\n"
+        for icao, pos in positions.items():
+            for p in pos: txt += f"• {icao}: {p[0]} {p[2]}\n"
+    bot.reply_to(message, txt)
+
+@bot.message_handler(commands=['delpos', 'DELPOS'])
+def cmd_delpos(message):
+    parts = message.text.split()[1:]
+    if not parts: bot.reply_to(message, "⚠️ 使用 /delpos all 或 /delpos ICAO"); return
+    if parts[0].lower() == 'all':
+        positions.clear(); watchlist.clear(); save_data(); bot.reply_to(message, "🗑️ 全部清空"); return
+    cur_icao, removed = None, []
+    i = 0
+    while i < len(parts):
+        p = parts[i].upper()
+        if len(p) == 4 and p.isalpha():
+            cur_icao = p
+            if i + 1 == len(parts) or len(parts[i+1]) == 4:
+                if cur_icao in positions: del positions[cur_icao]
+                if cur_icao in watchlist: watchlist.remove(cur_icao)
+                removed.append(f"{cur_icao}")
+                i += 1; continue
+            i += 1; continue
+        if cur_icao and i + 1 < len(parts):
+            target, intent = parts[i].upper().replace('N',''), parts[i+1].upper()
+            if cur_icao in positions:
+                positions[cur_icao] = [x for x in positions[cur_icao] if not (x[0].replace('N','')==target and x[2]==intent)]
+                removed.append(f"{cur_icao} {target}N {intent}")
+            i += 2; continue
+        i += 1
+    save_data(); bot.reply_to(message, "🗑️ 移除:\n" + "\n".join(removed))
 
 if __name__ == "__main__":
-    for i in watchlist: sync_airport_history(i)
-    threading.Thread(target=auto_broadcast_loop, daemon=True).start()
     bot.infinity_polling()
