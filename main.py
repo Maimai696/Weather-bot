@@ -2,7 +2,7 @@ import time, requests, telebot, os, math, threading, statistics, json
 from datetime import datetime, timedelta, timezone
 
 # ==========================================
-# 1. 配置中心与持久化
+# 1. 配置与持久化 (Zeabur 强固逻辑)
 # ==========================================
 DATA_FILE = "trading_data.json"
 BOT_TOKEN = os.getenv('BOT_TOKEN') or "你的TOKEN"
@@ -55,7 +55,7 @@ airport_metadata = {
 NUM_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "1️⃣1️⃣", "1️⃣2️⃣", "1️⃣3️⃣", "1️⃣4️⃣", "1️⃣5️⃣", "1️⃣6️⃣", "1️⃣7️⃣", "1️⃣8️⃣", "1️⃣9️⃣", "2️⃣0️⃣", "2️⃣1️⃣", "2️⃣2️⃣", "2️⃣3️⃣", "2️⃣4️⃣", "2️⃣5️⃣", "2️⃣6️⃣", "2️⃣7️⃣", "2️⃣8️⃣", "2️⃣9️⃣", "3️⃣0️⃣"]
 
 # ==========================================
-# 2. 物理与数学引擎 (保持 V17.7 满血)
+# 2. 数学引擎 (A 逻辑极值修正)
 # ==========================================
 def phi(z): return (1.0 + math.erf(z / math.sqrt(2.0))) / 2.0
 
@@ -80,6 +80,7 @@ def calculate_precise_win_rate(target, t_peak, curr_t, hour, intent, wind=0, rh=
         p_final_brk = 100.0 * (1.0 - phi(z2))
         p_hit_brk = min(100.0, p_final_brk * 2.1)
         p_def = round(phi(z1) * 100, 1)
+
         if intent == "防守": return p_def
         if intent == "突破": return round(p_hit_brk, 1)
         return round(p_hit_yes, 1)
@@ -118,14 +119,14 @@ def calc_ls_slope(icao, curr_t, metar):
     return (f"↑{abs(round(m,2))}" if m > 0 else f"↓{abs(round(m,2))}"), round(m, 2)
 
 # ==========================================
-# 3. 视觉报告引擎 (保持大括号与表情符号)
+# 3. 视觉报告引擎 (保持 V16.4 战时模板)
 # ==========================================
 def build_single_report(icao):
     icao = icao.upper()
     if icao not in airport_metadata: return f"❌ {icao} 未录入元数据\n\n", []
     if icao not in airport_hod or len(temp_memory.get(icao, [])) < 2: sync_airport_history(icao)
 
-    speci_tag = ""
+    speci_tag, model_warn = "", ""
     try:
         r = requests.get(f"https://api.checkwx.com/metar/{icao}/decoded", headers={"X-API-Key": CHECKWX_API_KEY}, timeout=5).json()
         metar = r['data'][0]
@@ -136,7 +137,7 @@ def build_single_report(icao):
             metar['observed_unix'] = datetime.strptime(obs_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
     except: return f"❌ {icao} METAR获取失败\n\n", []
 
-    cloud, rad, wind, rh, g_max, m_max, e_max, offset, model_warn = "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", 0, ""
+    cloud, rad, wind, rh, g_max, m_max, e_max, offset = "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", 0
     try:
         lat, lon = airport_metadata[icao]['coords']
         f = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,cloudcover,shortwave_radiation,windspeed_10m,relative_humidity_2m&models=dwd_icon,ecmwf_ifs,gfs_seamless&forecast_days=1&timezone=auto", timeout=10).json()
@@ -153,14 +154,15 @@ def build_single_report(icao):
 
     tp_peak = max(curr_t, statistics.median(v_f)) if 'v_f' in locals() and v_f and isinstance(curr_t, (int,float)) else 25.0
     slope_str, m_val = calc_ls_slope(icao, curr_t, metar)
-    h = (datetime.now(timezone.utc) + timedelta(seconds=offset)).hour
-    
+    local_dt = datetime.now(timezone.utc) + timedelta(seconds=offset)
+    h, num_wind, num_rh = local_dt.hour, (wind if isinstance(wind, (int,float)) else 0), (rh if isinstance(rh, (int,float)) else 0)
+
     matrix_lines = []
     curr_base = math.floor(curr_t if isinstance(curr_t,(int,float)) else 25)
     for i in range(1, 6):
         lvl = (curr_base - 1) + i
         v_req = round((float(lvl) + 1.0 - curr_t) / max(0.5, 19 - h), 2) if isinstance(curr_t, (int,float)) else 0.0
-        pb, pd, py = calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "突破", wind if isinstance(wind,int) else 0, rh if isinstance(rh,int) else 0, icao), calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "防守", wind if isinstance(wind,int) else 0, rh if isinstance(rh,int) else 0, icao), calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "YES", wind if isinstance(wind,int) else 0, rh if isinstance(rh,int) else 0, icao)
+        pb, pd, py = calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "突破", num_wind, num_rh, icao), calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "防守", num_wind, num_rh, icao), calculate_precise_win_rate(lvl, tp_peak, curr_t, h, "YES", num_wind, num_rh, icao)
         diag = " [已突破:结算Yes]" if icao in airport_hod and airport_hod[icao] >= lvl + 1.0 else (" 🚀 [突破中]" if pb > 65 else (" 🛡️ [防守中]" if pd > 85 else (" 💀 [极难触碰]" if v_req > m_val + 0.9 else "")))
         matrix_lines.append(f"{NUM_EMOJIS[i-1]} {lvl}N [需↑{v_req}|实{slope_str}] 突破:{pb}%|防守:{pd}%|YES:{py}%{diag}")
 
@@ -170,24 +172,24 @@ def build_single_report(icao):
     if icao in positions and positions[icao]:
         pos_lines = []
         for target, _, intent in positions[icao]:
-            win_pct = calculate_precise_win_rate(target, tp_peak, curr_t, h, intent, wind if isinstance(wind,int) else 0, rh if isinstance(rh,int) else 0, icao)
+            win_pct = calculate_precise_win_rate(target, tp_peak, curr_t, h, intent, num_wind, num_rh, icao)
             ma = "↑" if win_pct > prob_memory.get(f"{icao}_{target}_{intent}", win_pct) else ("↓" if win_pct < prob_memory.get(f"{icao}_{target}_{intent}", win_pct) else "-")
             prob_memory[f"{icao}_{target}_{intent}"] = win_pct
             dot = "🟢" if (win_pct >= 80 or (icao in airport_hod and airport_hod[icao] >= float(target))) else "🔴"
             airport_dots.append(dot)
-            pos_lines.append(f"{dot} ({target}N | 胜率:{win_pct}% {ma}) {'🛡️ [防守中]' if intent=='防守' else '🚀 [博弈中]'} [胜率{'提升' if ma=='↑' else '下降' if ma=='↓' else '横盘'}]")
+            pos_lines.append(f"{dot} ({target}N | 胜率:{win_pct}% {ma}) {'🛡️ [防守中]' if intent=='防守' else '🚀 [博弈中]'} [胜率{'提升📈' if ma=='↑' else '下降📉' if ma=='↓' else '横盘➖'}]")
             global_pos_list.append(f"{flag} {icao} {target}N **{intent}** (胜率:{win_pct}% {ma})")
         pos_display, main_dot = "\n".join(pos_lines), ("🔴" if "🔴" in airport_dots else "🟢")
 
     report = (f"----------------------\n{main_dot} {flag} **{icao} ({airport_metadata[icao]['name']})**\n"
-              f"**【盘口状态】** 当地 {datetime.now(timezone.utc).strftime('%H:%M')} | 实时 {curr_t}°C{speci_tag} | HOD: {airport_hod.get(icao, 'N/A')}°C | 斜率: {slope_str}\n"
+              f"**【盘口状态】** 当地 {local_dt.strftime('%H:%M')} | 实时 {curr_t}°C{speci_tag} | HOD: {airport_hod.get(icao, 'N/A')}°C | 斜率: {slope_str}\n"
               f"**【环境前瞻】** 云量: {cloud}% | 辐射: {rad}W/m² | 风速: {wind}km/h | 湿度: {rh}%\n"
               f"**【持仓监控】**\n{pos_display}\n"
               f"🔥 **【预测矩阵】**: (G:{g_max} I:{m_max} E:{e_max}){model_warn} | 基准: {round(tp_peak,1)}°C\n" + "\n".join(matrix_lines) + "\n")
     return report, global_pos_list
 
 # ==========================================
-# 4. 指令系统 (补全所有删除的功能)
+# 4. 指令系统 (批量解析器)
 # ==========================================
 def send_chunked(chat_id, header, reports, footer):
     msg = header
@@ -204,10 +206,70 @@ def cmd_watch(message):
     for icao in icaos:
         if icao not in watchlist:
             watchlist.append(icao)
-            sync_airport_history(icao) # 立即启动同步
+            sync_airport_history(icao)
             added.append(icao)
     save_data()
-    bot.reply_to(message, f"📡 已开启监控: {', '.join(added)}" if added else "⚠️ 机场已在监控中或输入有误")
+    bot.reply_to(message, f"📡 批量开启监控: {', '.join(added)}" if added else "⚠️ 机场已在列表或格式错误")
+
+@bot.message_handler(commands=['pos'])
+def cmd_pos(message):
+    parts, cur_icao, added = message.text.split()[1:], None, []
+    i = 0
+    while i < len(parts):
+        p = parts[i].upper()
+        if len(p) == 4 and p.isalpha():
+            cur_icao = p
+            if cur_icao not in watchlist: watchlist.append(cur_icao)
+            i += 1
+            continue
+        if cur_icao and i + 1 < len(parts):
+            target, intent = parts[i].upper().replace('N', ''), parts[i+1].upper()
+            if intent in ['突破', '防守', 'YES']:
+                if cur_icao not in positions: positions[cur_icao] = []
+                if not any(x[0] == target and x[2] == intent for x in positions[cur_icao]):
+                    positions[cur_icao].append((target, 'N', intent))
+                    added.append(f"{cur_icao} {target}N {intent}")
+                i += 2
+                continue
+        i += 1
+    save_data(); bot.send_message(message.chat.id, "✅ 批量录入:\n" + "\n".join(added) if added else "⚠️ 识别失败")
+
+@bot.message_handler(commands=['delpos'])
+def cmd_delpos(message):
+    parts = message.text.split()[1:]
+    if not parts: bot.reply_to(message, "⚠️ 格式: `/delpos ICAO` 或 `/delpos all` "); return
+    if parts[0].lower() == 'all':
+        positions.clear(); watchlist.clear(); save_data(); bot.reply_to(message, "🗑️ 全部清空"); return
+    
+    cur_icao, removed = None, []
+    i = 0
+    while i < len(parts):
+        p = parts[i].upper()
+        # 1. 如果是 ICAO
+        if len(p) == 4 and p.isalpha():
+            cur_icao = p
+            # 如果 ICAO 后面没有了，或者后面跟着的是另一个 ICAO，说明是删除整个机场
+            if i + 1 == len(parts) or (len(parts[i+1]) == 4 and parts[i+1].isalpha()):
+                if cur_icao in positions: del positions[cur_icao]
+                if cur_icao in watchlist: watchlist.remove(cur_icao)
+                removed.append(f"{cur_icao} (整体移除)")
+                i += 1
+                continue
+            i += 1
+            continue
+        # 2. 如果是 仓位细节
+        if cur_icao and i + 1 < len(parts):
+            target, intent = parts[i].upper().replace('N', ''), parts[i+1].upper()
+            if cur_icao in positions:
+                # 手术刀删除
+                original_len = len(positions[cur_icao])
+                positions[cur_icao] = [x for x in positions[cur_icao] if not (x[0]==target and x[2]==intent)]
+                if len(positions[cur_icao]) < original_len:
+                    removed.append(f"{cur_icao} {target}N {intent}")
+            i += 2
+            continue
+        i += 1
+    save_data(); bot.send_message(message.chat.id, "🗑️ 删除结果:\n" + "\n".join(removed) if removed else "⚠️ 未找到对应项")
 
 @bot.message_handler(commands=['list'])
 def cmd_list(message):
@@ -218,62 +280,21 @@ def cmd_list(message):
             for p in pos: txt += f"• {icao}: {p[0]}N {p[2]}\n"
     bot.reply_to(message, txt)
 
-@bot.message_handler(commands=['pos'])
-def cmd_pos(message):
-    parts, cur, added = message.text.split()[1:], None, []
-    i = 0
-    while i < len(parts):
-        p = parts[i].upper()
-        if len(p) == 4 and p.isalpha(): cur = p; i += 1
-        elif cur and i + 1 < len(parts):
-            target, intent = p.replace('N', ''), parts[i+1].upper()
-            if intent in ['突破', '防守', 'YES']:
-                if cur not in positions: positions[cur] = []
-                positions[cur].append((target, 'N', intent))
-                if cur not in watchlist: watchlist.append(cur)
-                added.append(f"{cur} {target}N {intent}"); i += 2
-            else: i += 1
-        else: i += 1
-    save_data(); bot.send_message(message.chat.id, "✅ 录入:\n" + "\n".join(added) if added else "⚠️ 录入失败")
-
-@bot.message_handler(commands=['delpos'])
-def cmd_delpos(message):
-    parts = message.text.split()[1:]
-    if not parts: bot.reply_to(message, "⚠️ 格式: `/delpos ICAO` 或 `/delpos all` "); return
-    
-    if parts[0].lower() == 'all':
-        positions.clear(); watchlist.clear(); save_data()
-        bot.reply_to(message, "🗑️ 仓位与监控已清空"); return
-    
-    icao = parts[0].upper()
-    if icao in positions:
-        if len(parts) >= 3: # 精准删除: /delpos LIMC 24N YES
-            target, intent = parts[1].replace('N',''), parts[2].upper()
-            positions[icao] = [p for p in positions[icao] if not (p[0]==target and p[2]==intent)]
-            bot.reply_to(message, f"🗑️ 已删除 {icao} {target}N {intent}")
-        else: # 删除整个机场
-            del positions[icao]
-            if icao in watchlist: watchlist.remove(icao)
-            bot.reply_to(message, f"🗑️ 已移除 {icao} 的所有监控")
-        save_data()
-    else: bot.reply_to(message, "⚠️ 未找到该机场仓位")
-
 @bot.message_handler(commands=['settime'])
 def cmd_settime(message):
     global BROADCAST_INTERVAL
     try:
         mins = int(message.text.split()[1]); BROADCAST_INTERVAL = mins * 60
         bot.reply_to(message, f"✅ 播报频率改为: {mins} 分钟")
-    except: bot.reply_to(message, "⚠️ 格式: /settime 15")
+    except: pass
 
 @bot.message_handler(commands=['now'])
 def cmd_now(message):
     target = [i.upper() for i in message.text.split()[1:] if len(i)==4] or watchlist
-    if not target: bot.reply_to(message, "⚠️ 监控列表为空"); return
     reports, all_pos = [], []
     for icao in target:
         txt, ps = build_single_report(icao); reports.append(txt); all_pos.extend(ps)
-    risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"⚠️ {p}" for p in all_pos]) if all_pos else ""
+    risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"{NUM_EMOJIS[idx] if idx<30 else ''} {p}" for idx, p in enumerate(all_pos)]) if all_pos else ""
     send_chunked(message.chat.id, "📊 **【全量战报】**\n\n", reports, risk_summary)
 
 def auto_broadcast_loop():
@@ -283,7 +304,7 @@ def auto_broadcast_loop():
                 reports, all_pos = [], []
                 for i in watchlist:
                     t, p = build_single_report(i); reports.append(t); all_pos.extend(p)
-                risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"⚠️ {p}" for p in all_pos]) if all_pos else ""
+                risk_summary = "\n----------------------\n🚨 **【风险汇总】:**\n" + "\n".join([f"{NUM_EMOJIS[idx] if idx<30 else ''} {p}" for idx, p in enumerate(all_pos)]) if all_pos else ""
                 send_chunked(MY_USER_ID, f"📢 **【定时播报】** ({BROADCAST_INTERVAL//60}min)\n\n", reports, risk_summary)
             time.sleep(BROADCAST_INTERVAL)
         except: time.sleep(60)
