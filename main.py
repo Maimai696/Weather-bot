@@ -8,7 +8,7 @@ TELEGRAM_BOT_TOKEN = "8652315325:AAHMAi9otjI5dEKOiuiIIM_wprwYpkJRLIo"
 TELEGRAM_CHAT_ID = "6822447850"
 
 # Polymarket 子图节点 (用于查询链上余额)
-SUBGRAPH_URL = "https://api.thegraph.com/subgraphs/name/polymarket/matic-markets"
+SUBGRAPH_URL = "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/polymarket-subgraph/1.1.0/gn"
 # ==========================================
 
 def get_onchain_positions(address):
